@@ -1,0 +1,236 @@
+#!/usr/bin/python
+
+import sys 
+from time import sleep
+import spidev
+import Adafruit_BBIO.GPIO as GPIO
+
+SPI = spidev.SpiDev()
+myDev = "/dev/spidev1.0"
+myAddr = [0xca, 0xfe, 0xfa, 0xce]
+remAddr = [0xd0, 0x0d, 0xd0, 0x0d]
+confReg = {'chan', 'conf_0', 'addr_fws', 'rx_pw', 'tx_pw', 'rx_addr_0', 'rx_addr_1', 'rx_addr_2', 'rx_addr_3', 'conf_1'}
+testFreq = 0b01101010
+
+def main():
+    if len(sys.argv) > 1:
+        if (sys.argv[1]=="tx")or(sys.argv[1]=="rx")or(sys.argv[1]=="cd")or(sys.argv[1]=="am"):
+            init()
+            try:
+                print_config()
+                if (sys.argv[1] == "tx"):
+                    for txcount in range (0, 1):
+                        test_tx("test single...", testFreq)
+                elif (sys.argv[1] == "rx"):
+                    test_rx()
+                elif (sys.argv[1] == "cd"):
+                    test_cd()
+                elif (sys.argv[1] == "am"):
+                    test_am()
+            finally:
+                SPI.close()
+                set_power_down()
+                GPIO.cleanup()
+        else:
+            usage()
+            sys.exit()
+    else:
+        usage()
+        sys.exit()
+
+## Functions:
+def usage():
+    print "usage: "+'\033[93m'+"scriptname "+'\033[94m'+"tx"+'\033[91m'+"|"+'\033[94m'+"rx"+'\033[91m'+"|"+'\033[94m'+"cd"+'\033[91m'+"|"+'\033[94m'+"am"
+    print '\033[94m'+"\ttx"+'\033[0m'+": send tx test payload from "+'\033[92m'+"myAddr"+'\033[0m'+" to "+'\033[92m'+"remAddr"+'\033[0m'+" at "+'\033[92m'+"testFreq"
+    print '\033[94m'+"\trx"+'\033[0m'+": listen for packet addressed to "+'\033[92m'+"myAddr"+'\033[0m'+" at "+'\033[92m'+"testFreq"+'\033[0m'+" and display payload"
+    print '\033[94m'+"\tam"+'\033[0m'+": listen for packet addressed to "+'\033[92m'+"myAddr"+'\033[0m'+" at "+'\033[92m'+"testFreq"
+    print '\033[94m'+"\tcd"+'\033[0m'+": listen for carrier at "+'\033[92m'+"testFreq"+'\033[0m'
+
+def init():
+    sys.stdout.write('\033[94m'+"[*]"+'\033[0m'+" Initializing radio... ")
+    GPIO.setup("P9_11", GPIO.OUT) # PWR - Power up chip. Active high.
+    GPIO.setup("P9_13", GPIO.OUT) # TXEN - Transmit mode. Low for Recieve mode.
+    GPIO.setup("P9_15", GPIO.OUT) # CE - Enable transciever. Active high.
+    GPIO.setup("P9_12", GPIO.IN) # CD - Carrier detect. High when carrier present on tuned freq at greater than -95dBm.
+    GPIO.setup("P9_14", GPIO.IN) # AM - Address match. High when packet header address field matches transciever address.
+    GPIO.setup("P9_16", GPIO.IN) # DR - Data ready. High when data packet is recieved
+    GPIO.output("P9_11", GPIO.LOW)
+    GPIO.output("P9_13", GPIO.LOW)
+    GPIO.output("P9_15", GPIO.LOW)
+    set_stand_by()
+
+    try:
+        SPI.open(1, 0)
+        SPI.xfer2([0b00000000, testFreq, 0b00011100, 0b01000100, 0b01000100, 0b00000100, myAddr[0], myAddr[1], myAddr[2], myAddr[3], 0b11011111])
+        print "done.\n"
+    except:
+        print '\033[91m'+"Failsauce! "+'\033[0m', sys.exc_info()[0]
+    finally:
+        SPI.close()
+
+def set_config(addr, val1, val2, desc):
+    try:
+        sys.stdout.write('\033[94m'+"[*]"+'\033[0m'+" Changing config register[s]... ")
+        set_stand_by()
+        SPI.open(1, 0)
+        SPI.xfer2([0b00000000^addr, val1, val2])
+        print "done.\n"
+    except:
+        print '\033[91m'+"Failmobile! Could not "+desc+'\033[0m', sys.exc_info()[0]
+    finally:
+        SPI.close()
+
+def test_am():
+    try:
+        count = 0
+        print '\033[94m'+"[*]"+'\033[0m'+" Listening for own address in header... "
+        while True:
+            set_stand_by()
+            SPI.open(1, 0)
+            SPI.xfer2([0b00000000, testFreq, 0b00001100, 0b01000100, 0b01000100, 0b00000100, myAddr[0], myAddr[1], myAddr[2], myAddr[3], 0b11011111])
+            set_rx()
+            while (not GPIO.input("P9_14")):
+                continue
+            count+=1
+            print "["+str(count)+"] address matched... "
+
+    except:
+        print '\033[91m'+"Failgasm! Could not recieve..."+'\033[0m'
+    finally:
+        SPI.close()
+
+def test_cd():
+    try:
+        count = 0
+        print '\033[94m'+"[*]"+'\033[0m'+" Listening for carrier... "
+        while True:
+            set_stand_by()
+            SPI.open(1, 0)
+            SPI.xfer2([0b00000000, testFreq, 0b00001100, 0b01000100, 0b01000100, 0b00000100, myAddr[0], myAddr[1], myAddr[2], myAddr[3], 0b11011111])
+            set_rx()
+            while (not GPIO.input("P9_12")):
+                continue
+            count+=1
+            print "["+str(count)+"] carrier found. "
+
+    except:
+        print '\033[91m'+"Failgasm! Could not recieve..."+'\033[0m'
+    finally:
+        SPI.close()
+
+def test_rx():
+    try:
+        print '\033[94m'+"[*]"+'\033[0m'+" Listening... "
+        set_stand_by()
+        SPI.open(1, 0)
+        SPI.xfer2([0b00000000, testFreq, 0b00001100, 0b01000100, 0b01000100, 0b00000100, myAddr[0], myAddr[1], myAddr[2], myAddr[3], 0b11011111])
+        SPI.close()
+        set_rx()
+        sleep(0.01)
+        while (not GPIO.input("P9_12")):
+            continue
+        print "carrier found... "
+        while (not GPIO.input("P9_14")):
+            continue
+        print "address match found... "
+        set_stand_by()
+        while (not GPIO.input("P9_16")):
+            continue
+        SPI.open(1, 0)
+        res = SPI.xfer([0b00100100])
+        print '{:08b}'.format(res[0])
+        res = SPI.readbytes(4)
+        sys.stdout.write("RX Buffer: "+'{:08b}'.format(res[0])+" "+'{:08b}'.format(res[1])+" "+'{:08b}'.format(res[2])+" "+'{:08b}'.format(res[3])+"\n")
+    except:
+        print '\033[91m'+"Failgasm! Could not recieve..."+'\033[0m'
+    finally:
+        SPI.close()
+
+def test_tx(desc, freq):
+    try:
+        set_tx()
+        # Writing address, payload and config:
+        SPI.open(1, 0)
+        SPI.xfer2([0b00100010, remAddr[0], remAddr[1], remAddr[2], remAddr[3]])
+        SPI.close()
+
+        SPI.open(1, 0)
+        SPI.xfer2([0b00100000, 11, 110, 22, 220])
+        SPI.close()
+
+        SPI.open(1, 0)
+        SPI.xfer2([0b00000000, freq, 0b00011100, 0b01000100, 0b01000100, 0b00000100, myAddr[0], myAddr[1], myAddr[2], myAddr[3], 0b11011111])
+
+        sys.stdout.write('\033[94m'+"\n[*]"+'\033[0m'+" Trying send payload...")
+        while (not GPIO.input("P9_16")):
+            continue
+        print " done.\n"
+    except:
+        print '\033[91m'+"Failmobile! Could not "+desc+'\033[0m', sys.exc_info()[0]
+    finally:
+        SPI.close()
+
+def print_config():
+    try:
+        set_stand_by()
+        SPI.open(1, 0)
+        print '\033[94m'+"[*]"+'\033[0m'+" Reading config registers:"
+        for offset in range (0b0000, 0b1010):
+                bytes = SPI.xfer2([0b00010000^offset, 0b00010000^offset])
+                sys.stdout.write(str("\t"+hex(offset)+": "+'\033[93m'+'{:08b}'.format(bytes[1]))+'\033[0m'+": "+'\033[92m'+hex(bytes[1])+'\033[0m'+" \n")
+    except:
+                print '\033[91m'+"Could not read byte"+'\033[0m'
+    finally:
+        SPI.close()
+
+def set_power_down():
+    GPIO.setup("P9_11", GPIO.OUT)
+    GPIO.output("P9_11", GPIO.LOW)
+
+    GPIO.setup("P9_13", GPIO.IN)
+
+    GPIO.setup("P9_15", GPIO.IN)
+
+def set_stand_by():
+    GPIO.setup("P9_11", GPIO.OUT)
+    GPIO.output("P9_11", GPIO.HIGH)
+
+    GPIO.setup("P9_13", GPIO.IN)
+
+    GPIO.setup("P9_15", GPIO.OUT)
+    GPIO.output("P9_15", GPIO.LOW)
+
+def set_read_rx():
+    GPIO.setup("P9_11", GPIO.OUT)
+    GPIO.output("P9_11", GPIO.HIGH)
+
+    GPIO.setup("P9_13", GPIO.OUT)
+    GPIO.output("P9_13", GPIO.LOW)
+
+    GPIO.setup("P9_15", GPIO.IN)
+
+def set_rx():
+    GPIO.setup("P9_11", GPIO.OUT)
+    GPIO.output("P9_11", GPIO.HIGH)
+
+    GPIO.setup("P9_13", GPIO.OUT)
+    GPIO.output("P9_13", GPIO.LOW)
+
+    GPIO.setup("P9_15", GPIO.OUT)
+    GPIO.output("P9_15", GPIO.HIGH)
+
+def set_tx():
+    
+    GPIO.setup("P9_11", GPIO.OUT)
+    GPIO.output("P9_11", GPIO.HIGH)
+    
+    GPIO.setup("P9_13", GPIO.OUT)
+    GPIO.output("P9_13", GPIO.HIGH)
+    
+    GPIO.setup("P9_15", GPIO.OUT)
+    GPIO.output("P9_15", GPIO.HIGH)
+
+############################
+
+if __name__ == "__main__":
+    main()
